@@ -7,21 +7,16 @@ on:
 permissions:
   contents: read
 
-# ==================================================
+# =====================================================
 # COMPILE
-# ==================================================
+# =====================================================
 jobs:
   compile:
     runs-on: self-hosted
     steps:
-      - name: Clean workspace (permission safe)
-        run: |
-          sudo rm -rf $GITHUB_WORKSPACE/* || true
-          sudo chown -R ubuntu:ubuntu $GITHUB_WORKSPACE || true
-
       - uses: actions/checkout@v4
 
-      - name: Install Java 17 & Maven
+      - name: Install Java & Maven
         run: |
           sudo apt-get update -y
           sudo apt-get install -y openjdk-17-jdk maven
@@ -29,138 +24,109 @@ jobs:
       - name: Compile
         run: mvn -B -ntp compile
 
-# ==================================================
+# =====================================================
 # TEST
-# ==================================================
+# =====================================================
   test:
     runs-on: self-hosted
     needs: compile
     steps:
       - uses: actions/checkout@v4
-      - name: Run Tests
-        run: mvn -B -ntp test
+      - run: mvn -B -ntp test
 
-# ==================================================
-# TRIVY FILE SYSTEM SCAN
-# ==================================================
-  security-check:
+# =====================================================
+# TRIVY FILESYSTEM SCAN (BULLETPROOF)
+# =====================================================
+  trivy-fs-scan:
     runs-on: self-hosted
     needs: test
     steps:
       - uses: actions/checkout@v4
 
-      - name: Trivy FS Scan
+      - name: Install Trivy
         run: |
+          sudo apt-get install -y wget
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo tee /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] \
+            https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -y
+          sudo apt-get install -y trivy
+
+      - name: Run Trivy FS scan (always generate report)
+        run: |
+          mkdir -p reports/trivy
+
           trivy fs . \
             --severity HIGH,CRITICAL \
             --format html \
-            --output trivy-fs-report.html || true
+            --output reports/trivy/trivy-fs-report.html || true
+
+          # GUARANTEE file existence
+          if [ ! -f reports/trivy/trivy-fs-report.html ]; then
+            echo "<html><body><h3>No Trivy vulnerabilities found or scan failed</h3></body></html>" \
+              > reports/trivy/trivy-fs-report.html
+          fi
 
       - name: Upload Trivy FS Report
         uses: actions/upload-artifact@v4
         with:
           name: trivy-fs-report
-          path: trivy-fs-report.html
+          path: reports/trivy/trivy-fs-report.html
+          if-no-files-found: error
 
-# ==================================================
-# OWASP DEPENDENCY CHECK (FAST – NVD API KEY)
-# ==================================================
-  owasp-dependency-check:
+# =====================================================
+# OWASP DEPENDENCY CHECK
+# =====================================================
+  owasp-scan:
     runs-on: self-hosted
-    needs: security-check
+    needs: trivy-fs-scan
     steps:
       - uses: actions/checkout@v4
 
-      - name: OWASP Dependency Check (Docker + API Key)
+      - name: Run OWASP Dependency Check
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          mkdir -p /tmp/owasp-report
-
+          mkdir -p reports/owasp
           docker run --rm \
             -u $(id -u):$(id -g) \
             -v $(pwd):/src \
-            -v /tmp/owasp-report:/report \
+            -v $(pwd)/reports/owasp:/report \
             owasp/dependency-check:latest \
             --scan /src \
             --format HTML \
             --out /report \
-            --nvdApiKey $NVD_API_KEY \
-            --disableYarnAudit \
-            --disableNodeAudit \
-            --failOnCVSS 7 || true
-
-          cp /tmp/owasp-report/*.html dependency-check-report.html
+            --nvdApiKey $NVD_API_KEY || true
 
       - name: Upload OWASP Report
         uses: actions/upload-artifact@v4
         with:
           name: owasp-report
-          path: dependency-check-report.html
+          path: reports/owasp/*.html
 
-# ==================================================
-# PACKAGE (CREATE JAR)
-# ==================================================
+# =====================================================
+# PACKAGE
+# =====================================================
   package:
     runs-on: self-hosted
-    needs: owasp-dependency-check
+    needs: owasp-scan
     steps:
       - uses: actions/checkout@v4
+      - run: mvn -B -ntp package
 
-      - name: Package Application
-        run: mvn -B -ntp package
-
-      - name: Upload JAR
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: app-jar
           path: target/*.jar
 
-# ==================================================
-# DOCKER BUILD & PUSH (WORKING VERSION)
-# ==================================================
-  build_docker_image_and_push:
-    runs-on: self-hosted
-    needs: package
-    environment: My-CI-pipeline-envs
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download JAR artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: app
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: acecloudacademy/bankapp:latest
-
-# ==================================================
+# =====================================================
 # EMAIL NOTIFICATION (SUCCESS OR FAILURE)
-# ==================================================
+# =====================================================
   email-notification:
     runs-on: self-hosted
-    needs:
-      - compile
-      - test
-      - security-check
-      - owasp-dependency-check
-      - package
-      - build_docker_image_and_push
+    needs: [package]
     if: always()
     steps:
       - name: Download OWASP report
@@ -168,23 +134,25 @@ jobs:
         with:
           name: owasp-report
           path: reports/owasp
+        continue-on-error: true
 
-      - name: Download Trivy FS report
+      - name: Download Trivy report
         uses: actions/download-artifact@v4
         with:
           name: trivy-fs-report
           path: reports/trivy
+        continue-on-error: true
 
-      - name: Send Email Notification
+      - name: Send email
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "CI Pipeline Status – ${{ job.status }}"
           to: vijayakumarbl276@gmail.com
           from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
+          subject: "CI Pipeline Result: ${{ job.status }}"
           body: |
             Hi Vijay,
 
@@ -192,11 +160,9 @@ jobs:
 
             Status: ${{ job.status }}
 
-            Attached Reports:
-            - OWASP Dependency Check
-            - Trivy File System Scan
+            Security reports are attached if available.
 
             Regards,
-            GitHub Actions CI
+            GitHub Actions
           attachments: |
             reports/**/*
