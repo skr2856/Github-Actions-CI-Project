@@ -143,4 +143,4 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
-          tags: adijaiswal/bankapp:latest
+          tags: acecloudacademy/bankapp:latest
