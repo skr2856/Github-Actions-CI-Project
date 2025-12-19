@@ -271,4 +271,3 @@ jobs:
           attachments: |
             reports/**/*.html
             reports/**/*.json
-Update cicd.yml · Acecloudacademy/Github-Actions-CI-Project@603e148 
