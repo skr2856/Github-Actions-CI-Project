@@ -1,157 +1,256 @@
-name: Secure CI Pipeline with Docker & Scans
+name: Full CI/CD Security Pipeline
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_IMAGE: acecloudacademy/bankapp:latest
 
 jobs:
-  secure-ci:
+  # --------------------------------------------------
+  # COMPILE
+  # --------------------------------------------------
+  compile:
     runs-on: self-hosted
-
-    env:
-      IMAGE_NAME: docker.io/${{ secrets.DOCKER_USERNAME }}/secure-app
-      IMAGE_TAG: ${{ github.run_number }}
-
     steps:
-    # -------------------------------------------------
-    # Checkout
-    # -------------------------------------------------
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Clean workspace
+        run: |
+          sudo rm -rf $GITHUB_WORKSPACE/* || true
+          sudo chown -R $USER:$USER $GITHUB_WORKSPACE || true
 
-    # -------------------------------------------------
-    # SonarQube Scan
-    # -------------------------------------------------
-    - name: SonarQube Scan
-      continue-on-error: true
-      run: |
-        docker run --rm \
-          -e SONAR_HOST_URL=${{ secrets.SONAR_HOST_URL }} \
-          -e SONAR_LOGIN=${{ secrets.SONAR_TOKEN }} \
-          -v "$PWD:/usr/src" \
-          sonarsource/sonar-scanner-cli
+      - uses: actions/checkout@v4
 
-    # -------------------------------------------------
-    # OWASP Dependency Check (Fast with API key)
-    # -------------------------------------------------
-    - name: OWASP Dependency Check
-      continue-on-error: true
-      run: |
-        mkdir -p reports/owasp
-        docker run --rm \
-          -v "$PWD:/src" \
-          owasp/dependency-check:latest \
-          --scan /src \
-          --format HTML \
-          --out /src/reports/owasp \
-          --nvdApiKey ${{ secrets.NVD_API_KEY }} \
-          --disableNodeAudit \
-          --disableYarnAudit
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: maven
 
-    - name: Upload OWASP Report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: owasp-report
-        path: reports/owasp
+      - name: Set up Maven
+        uses: s4u/setup-maven-action@v1.12.0
+        with:
+          maven-version: "3.9.9"
 
-    # -------------------------------------------------
-    # Install Trivy (Binary – no GPG issues)
-    # -------------------------------------------------
-    - name: Install Trivy
-      run: |
-        wget -q https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.50.1_Linux-64bit.tar.gz
-        tar -xzf trivy_0.50.1_Linux-64bit.tar.gz
-        sudo mv trivy /usr/local/bin/
+      - name: Compile Project
+        run: mvn -B compile
 
-    # -------------------------------------------------
-    # Trivy FS Scan
-    # -------------------------------------------------
-    - name: Trivy File System Scan
-      continue-on-error: true
-      run: |
-        mkdir -p reports/trivy-fs
-        trivy fs . \
-          --severity HIGH,CRITICAL \
-          --format template \
-          --template "@contrib/html.tpl" \
-          --output reports/trivy-fs/trivy-fs-report.html
+      - name: Upload Compile Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-output
+          path: target/
 
-    - name: Upload Trivy FS Report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: trivy-fs-report
-        path: reports/trivy-fs
+  # --------------------------------------------------
+  # UNIT TESTS
+  # --------------------------------------------------
+  test:
+    runs-on: self-hosted
+    needs: compile
+    steps:
+      - uses: actions/checkout@v4
 
-    # -------------------------------------------------
-    # Docker Build
-    # -------------------------------------------------
-    - name: Docker Build
-      run: |
-        docker build -t $IMAGE_NAME:$IMAGE_TAG .
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: maven
 
-    # -------------------------------------------------
-    # Trivy Image Scan
-    # -------------------------------------------------
-    - name: Trivy Image Scan
-      continue-on-error: true
-      run: |
-        mkdir -p reports/trivy-image
-        trivy image $IMAGE_NAME:$IMAGE_TAG \
-          --severity HIGH,CRITICAL \
-          --format template \
-          --template "@contrib/html.tpl" \
-          --output reports/trivy-image/trivy-image-report.html
+      - name: Set up Maven
+        uses: s4u/setup-maven-action@v1.12.0
+        with:
+          maven-version: "3.9.9"
 
-    - name: Upload Trivy Image Report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: trivy-image-report
-        path: reports/trivy-image
+      - name: Run Unit Tests
+        run: mvn -B test
 
-    # -------------------------------------------------
-    # Docker Login & Push
-    # -------------------------------------------------
-    - name: Docker Login
-      run: |
-        echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+  # --------------------------------------------------
+  # SECURITY SCANS – TRIVY FS + GITLEAKS
+  # --------------------------------------------------
+  security-check:
+    runs-on: self-hosted
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Docker Push
-      run: |
-        docker push $IMAGE_NAME:$IMAGE_TAG
+      - name: Install Trivy
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -y
+          sudo apt-get install -y trivy
 
-    # -------------------------------------------------
-    # Email Notification (SUCCESS / FAILURE)
-    # -------------------------------------------------
-    - name: Send Email Notification
-      if: always()
-      uses: dawidd6/action-send-mail@v3
-      with:
-        server_address: smtp.gmail.com
-        server_port: 587
-        secure: false
-        username: ${{ secrets.GMAIL_USERNAME }}
-        password: ${{ secrets.GMAIL_APP_PASSWORD }}
-        from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
-        to: vijayakumarbl276@gmail.com
-        subject: "CI Security Pipeline Result – ${{ job.status }}"
-        body: |
-          Hi Vijay,
+      - name: Trivy FS Scan
+        run: trivy fs --exit-code 0 --severity HIGH,CRITICAL --format html --output trivy-fs-report.html .
 
-          CI Pipeline Status: ${{ job.status }}
+      - name: Install Gitleaks
+        run: sudo apt-get install -y gitleaks
 
-          Executed stages:
-          ✔ SonarQube Scan
-          ✔ OWASP Dependency Check
-          ✔ Trivy FS Scan
-          ✔ Docker Image Build
-          ✔ Trivy Image Scan
-          ✔ Docker Image Push
+      - name: Gitleaks Scan
+        run: gitleaks detect --source . --report-path gitleaks-report.json --report-format json
 
-          Reports are attached as GitHub artifacts.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            trivy-fs-report.html
+            gitleaks-report.json
 
-          Regards,
-          GitHub Actions CI
+  # --------------------------------------------------
+  # SONARQUBE SCAN
+  # --------------------------------------------------
+  sonar-scan:
+    runs-on: self-hosted
+    needs: security-check
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: maven
+
+      - name: Set up Maven
+        uses: s4u/setup-maven-action@v1.12.0
+        with:
+          maven-version: "3.9.9"
+
+      - name: Build Project
+        run: mvn -B package
+
+      - name: Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v5.0.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
+      - name: SonarQube Quality Gate
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        with:
+          pollingTimeoutSec: 600
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+
+  # --------------------------------------------------
+  # OWASP DEPENDENCY CHECK
+  # --------------------------------------------------
+  owasp-dependency-check:
+    runs-on: self-hosted
+    needs: sonar-scan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency Check (Docker)
+        run: |
+          mkdir -p /tmp/owasp-report
+          docker run --rm \
+            -u $(id -u):$(id -g) \
+            -v $(pwd):/src \
+            -v /tmp/owasp-report:/report \
+            owasp/dependency-check:latest \
+            --scan /src \
+            --format HTML \
+            --out /report \
+            --failOnCVSS 7 || true
+          cp /tmp/owasp-report/* dependency-check-report.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: owasp-report
+          path: dependency-check-report.html
+
+  # --------------------------------------------------
+  # BUILD DOCKER IMAGE AND PUSH
+  # --------------------------------------------------
+  build-docker:
+    runs-on: self-hosted
+    needs: [sonar-scan, owasp-dependency-check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download JAR Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: app
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ env.DOCKER_IMAGE }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-info
+          path: .docker
+
+  # --------------------------------------------------
+  # EMAIL NOTIFICATION
+  # --------------------------------------------------
+  email-notification:
+    runs-on: self-hosted
+    needs: build-docker
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+
+      - name: Send Email Notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
+          to: vijayakumarbl276@gmail.com
+          subject: "CI/CD Pipeline Reports – ${{ job.status }}"
+          body: |
+            Hi Vijay,
+
+            CI Pipeline has completed.
+
+            Reports attached:
+            - Trivy FS Scan
+            - Gitleaks Scan
+            - OWASP Dependency Check
+
+            Docker image pushed: ${{ env.DOCKER_IMAGE }}
+
+            Regards,
+            GitHub Actions CI
+          attachments: |
+            reports/**/*.html
+            reports/**/*.json
