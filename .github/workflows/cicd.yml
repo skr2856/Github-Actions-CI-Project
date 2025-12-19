@@ -9,12 +9,11 @@ permissions:
 
 env:
   JAVA_VERSION: "17"
-  MAVEN_OPTS: "-Dmaven.repo.local=$HOME/.m2/repository"
 
+jobs:
 # =====================================================
 # COMPILE
 # =====================================================
-jobs:
   compile:
     runs-on: self-hosted
     steps:
@@ -44,7 +43,7 @@ jobs:
       - run: mvn -B -ntp test
 
 # =====================================================
-# TRIVY FILESYSTEM SCAN (FAST + STABLE)
+# TRIVY FS SCAN (BINARY ONLY – NO APT)
 # =====================================================
   trivy-fs-scan:
     runs-on: self-hosted
@@ -52,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Trivy (binary – no apt, no GPG)
+      - name: Install Trivy (binary)
         run: |
           TRIVY_VERSION=0.51.1
           curl -sfL https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz | tar -xz
@@ -69,19 +68,13 @@ jobs:
             --format html \
             --output reports/trivy/trivy-fs-report.html || true
 
-          # Guarantee artifact
-          if [ ! -f reports/trivy/trivy-fs-report.html ]; then
-            echo "<html><body><h3>No vulnerabilities found</h3></body></html>" \
-              > reports/trivy/trivy-fs-report.html
-          fi
-
       - uses: actions/upload-artifact@v4
         with:
           name: trivy-fs-report
           path: reports/trivy/trivy-fs-report.html
 
 # =====================================================
-# OWASP DEPENDENCY CHECK (FAST – WITH API KEY)
+# OWASP DEPENDENCY CHECK (FAST + API KEY)
 # =====================================================
   owasp-dependency-check:
     runs-on: self-hosted
@@ -89,10 +82,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: OWASP Dependency Check (Docker – Optimized)
+      - name: OWASP Dependency Check
         run: |
           mkdir -p reports/owasp
-
           docker run --rm \
             -u $(id -u):$(id -g) \
             -v $(pwd):/src \
@@ -106,19 +98,13 @@ jobs:
             --nvdApiKey ${{ secrets.NVD_API_KEY }} \
             --failOnCVSS 7 || true
 
-          # Guarantee artifact
-          if [ ! -f reports/owasp/dependency-check-report.html ]; then
-            echo "<html><body><h3>No vulnerabilities found</h3></body></html>" \
-              > reports/owasp/dependency-check-report.html
-          fi
-
       - uses: actions/upload-artifact@v4
         with:
           name: owasp-report
           path: reports/owasp/dependency-check-report.html
 
 # =====================================================
-# BUILD + PACKAGE
+# BUILD
 # =====================================================
   build:
     runs-on: self-hosted
@@ -133,7 +119,7 @@ jobs:
           path: target/*.jar
 
 # =====================================================
-# DOCKER BUILD & PUSH (YOUR WORKING VERSION)
+# DOCKER BUILD & PUSH (WORKING VERSION)
 # =====================================================
   build_docker_image_and_push:
     runs-on: self-hosted
@@ -142,23 +128,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download JAR artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: app
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v3
 
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
@@ -176,8 +158,7 @@ jobs:
       - owasp-dependency-check
       - build_docker_image_and_push
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: reports
 
@@ -188,16 +169,16 @@ jobs:
           server_port: 587
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "CI Pipeline Result – ${{ job.status }}"
           to: vijayakumarbl276@gmail.com
           from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
+          subject: "CI Pipeline Result – ${{ job.status }}"
           body: |
             Hi Vijay,
 
             CI Pipeline Status: ${{ job.status }}
 
             Attached:
-            - Trivy Filesystem Scan Report
+            - Trivy FS Scan Report
             - OWASP Dependency Check Report
 
             Regards,
