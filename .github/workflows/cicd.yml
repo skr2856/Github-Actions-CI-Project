@@ -1,28 +1,3 @@
-
-Skip to content
-Navigation Menu
-Acecloudacademy
-Github-Actions-CI-Project
-
-Code
-Issues
-Pull requests
-Actions
-Projects
-Security
-Insights
-
-    Settings
-
-Full CI/CD Security Pipeline
-Update cicd.yml #36
-
-Jobs
-
-Run details
-
-Workflow file for this run
-.github/workflows/cicd.yml at 603e148
 name: Full CI/CD Security Pipeline
 
 on:
