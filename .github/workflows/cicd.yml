@@ -151,8 +151,8 @@ jobs:
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v5.0.0
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}             # Must exist
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}         # Full URL with http/https
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
         with:
           projectBaseDir: .
 
@@ -165,7 +165,7 @@ jobs:
           pollingTimeoutSec: 600
 
   # --------------------------------------------------
-  # OWASP DEPENDENCY CHECK
+  # OWASP DEPENDENCY CHECK (FAST)
   # --------------------------------------------------
   owasp-dependency-check:
     runs-on: self-hosted
@@ -173,24 +173,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run OWASP Dependency Check (Docker)
+      - name: OWASP Dependency Check (Fast with API Key + Cache)
+        continue-on-error: true
         run: |
-          mkdir -p /tmp/owasp-report
+          mkdir -p reports/owasp
+          mkdir -p $HOME/.dependency-check/data
           docker run --rm \
-            -u $(id -u):$(id -g) \
-            -v $(pwd):/src \
-            -v /tmp/owasp-report:/report \
+            -v "$PWD:/src" \
+            -v "$HOME/.dependency-check/data:/usr/share/dependency-check/data" \
             owasp/dependency-check:latest \
             --scan /src \
             --format HTML \
-            --out /report \
-            --failOnCVSS 7 || true
-          cp /tmp/owasp-report/* dependency-check-report.html
+            --out /src/reports/owasp \
+            --nvdApiKey ${{ secrets.NVD_API_KEY }} \
+            --disableNodeAudit \
+            --disableYarnAudit
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload OWASP Report
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: owasp-report
-          path: dependency-check-report.html
+          path: reports/owasp
 
   # --------------------------------------------------
   # BUILD DOCKER IMAGE, TRIVY IMAGE SCAN & PUSH
