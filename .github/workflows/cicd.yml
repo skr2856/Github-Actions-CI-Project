@@ -96,9 +96,7 @@ jobs:
 
       - name: Trivy FS Scan (JSON & HTML)
         run: |
-          # JSON report
           trivy fs --exit-code 0 --severity HIGH,CRITICAL --format json --output trivy-fs-report.json .
-          # HTML report
           trivy fs --exit-code 0 --severity HIGH,CRITICAL \
             --format template --template "./contrib/html.tpl" \
             --output trivy-fs-report.html .
@@ -120,9 +118,10 @@ jobs:
   # --------------------------------------------------
   # SONARQUBE SCAN
   # --------------------------------------------------
-  sonar-scan:
+  build_project_and_sonar_scan:
     runs-on: self-hosted
-    needs: security-check
+    needs: test
+    environment: My-CI-pipeline-envs
     steps:
       - uses: actions/checkout@v4
         with:
@@ -152,23 +151,25 @@ jobs:
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v5.0.0
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}             # Must exist
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}         # Full URL with http/https
+        with:
+          projectBaseDir: .
 
       - name: SonarQube Quality Gate
         uses: sonarsource/sonarqube-quality-gate-action@master
-        with:
-          pollingTimeoutSec: 600
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        with:
+          pollingTimeoutSec: 600
 
   # --------------------------------------------------
   # OWASP DEPENDENCY CHECK
   # --------------------------------------------------
   owasp-dependency-check:
     runs-on: self-hosted
-    needs: sonar-scan
+    needs: build_project_and_sonar_scan
     steps:
       - uses: actions/checkout@v4
 
@@ -196,7 +197,7 @@ jobs:
   # --------------------------------------------------
   build-docker:
     runs-on: self-hosted
-    needs: [sonar-scan, owasp-dependency-check]
+    needs: [build_project_and_sonar_scan, owasp-dependency-check]
     steps:
       - uses: actions/checkout@v4
 
