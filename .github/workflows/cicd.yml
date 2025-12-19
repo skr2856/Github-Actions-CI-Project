@@ -1,279 +1,38 @@
-name: Full CI/CD Security Pipeline
-
-on:
-  push:
-    branches: ["main"]
-
-permissions:
-  contents: read
-
-env:
-  DOCKER_IMAGE: acecloudacademy/bankapp:latest
-
-jobs:
 # --------------------------------------------------
-# 1. COMPILE
+# EMAIL AUTH VERIFICATION (DEBUG JOB)
 # --------------------------------------------------
-  compile:
-    runs-on: self-hosted
-    steps:
-      - name: Clean workspace
-        run: |
-          sudo rm -rf $GITHUB_WORKSPACE/* || true
-          sudo chown -R $USER:$USER $GITHUB_WORKSPACE || true
+email-verification:
+  runs-on: self-hosted
+  environment: My-CI-pipeline-envs
+  steps:
+    # 1️⃣ Verify secrets are visible
+    - name: Debug Gmail Secrets
+      run: |
+        echo "GMAIL_USERNAME present: ${{ secrets.GMAIL_USERNAME != '' }}"
+        echo "GMAIL_APP_PASSWORD present: ${{ secrets.GMAIL_APP_PASSWORD != '' }}"
 
-      - uses: actions/checkout@v4
+    # 2️⃣ Send simple test email
+    - name: Send Test Email (Gmail SMTP)
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        secure: false
+        username: ${{ secrets.GMAIL_USERNAME }}
+        password: ${{ secrets.GMAIL_APP_PASSWORD }}
+        from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
+        to: vijayakumarbl276@gmail.com
+        subject: "✅ Gmail SMTP Test – GitHub Actions"
+        body: |
+          Hi Vijay,
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: "17"
-          distribution: "temurin"
-          cache: maven
+          This is a test email to verify Gmail SMTP authentication
+          using GitHub Actions Environment secrets.
 
-      - name: Set up Maven
-        uses: s4u/setup-maven-action@v1.12.0
-        with:
-          maven-version: "3.9.9"
+          If you received this email:
+          ✔️ Environment secrets are working
+          ✔️ Gmail App Password is valid
+          ✔️ SMTP configuration is correct
 
-      - name: Compile Project
-        run: mvn -B compile
-
-# --------------------------------------------------
-# 2. UNIT TESTS
-# --------------------------------------------------
-  test:
-    runs-on: self-hosted
-    needs: compile
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: "17"
-          distribution: "temurin"
-          cache: maven
-
-      - name: Set up Maven
-        uses: s4u/setup-maven-action@v1.12.0
-        with:
-          maven-version: "3.9.9"
-
-      - name: Run Unit Tests
-        run: mvn -B test
-
-# --------------------------------------------------
-# 3. SECURITY SCANS – TRIVY FS + GITLEAKS
-# --------------------------------------------------
-  security-check:
-    runs-on: self-hosted
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Trivy
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/trivy.gpg
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -y
-          sudo apt-get install -y trivy
-
-      - name: Prepare Trivy HTML Template
-        run: |
-          mkdir -p contrib
-          wget -q -O contrib/html.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl
-
-      - name: Trivy FS Scan (JSON + HTML)
-        run: |
-          trivy fs --exit-code 0 --severity HIGH,CRITICAL \
-            --format json --output trivy-fs-report.json .
-          trivy fs --exit-code 0 --severity HIGH,CRITICAL \
-            --format template --template "./contrib/html.tpl" \
-            --output trivy-fs-report.html .
-
-      - name: Install Gitleaks
-        run: sudo apt-get install -y gitleaks
-
-      - name: Gitleaks Scan
-        run: gitleaks detect --source . \
-          --report-path gitleaks-report.json \
-          --report-format json
-
-      - name: Upload Security Reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: security-reports
-          path: |
-            trivy-fs-report.json
-            trivy-fs-report.html
-            gitleaks-report.json
-
-# --------------------------------------------------
-# 4. BUILD + SONARQUBE SCAN
-# --------------------------------------------------
-  build_project_and_sonar_scan:
-    runs-on: self-hosted
-    needs: security-check
-    environment: My-CI-pipeline-envs
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: "17"
-          distribution: "temurin"
-          cache: maven
-
-      - name: Set up Maven
-        uses: s4u/setup-maven-action@v1.12.0
-        with:
-          maven-version: "3.9.9"
-
-      - name: Build Project
-        run: mvn -B package
-
-      - name: Upload JAR Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-jar
-          path: target/*.jar
-
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@v5.0.0
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-
-      - name: SonarQube Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        with:
-          pollingTimeoutSec: 600
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
-
-# --------------------------------------------------
-# 5. OWASP DEPENDENCY CHECK (FAST + CACHE)
-# --------------------------------------------------
-  owasp-dependency-check:
-    runs-on: self-hosted
-    needs: build_project_and_sonar_scan
-    environment: My-CI-pipeline-envs
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: OWASP Dependency Check
-        continue-on-error: true
-        run: |
-          mkdir -p reports/owasp
-          mkdir -p $HOME/.dependency-check/data
-          docker run --rm \
-            -v "$PWD:/src" \
-            -v "$HOME/.dependency-check/data:/usr/share/dependency-check/data" \
-            owasp/dependency-check:latest \
-            --scan /src \
-            --format HTML \
-            --out /src/reports/owasp \
-            --nvdApiKey ${{ secrets.NVD_API_KEY }} \
-            --disableNodeAudit \
-            --disableYarnAudit
-
-      - name: Upload OWASP Report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: owasp-report
-          path: reports/owasp
-
-# --------------------------------------------------
-# 6. DOCKER BUILD & PUSH
-# --------------------------------------------------
-  build_docker_image_and_push:
-    runs-on: self-hosted
-    needs: owasp-dependency-check
-    environment: My-CI-pipeline-envs
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download JAR Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: app
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ env.DOCKER_IMAGE }}
-
-# --------------------------------------------------
-
-
-# --------------------------------------------------
-# 7. EMAIL NOTIFICATION (ENVIRONMENT SECRETS)
-# --------------------------------------------------
-  email-notification:
-    runs-on: self-hosted
-    needs: build_docker_image_and_push
-    environment: My-CI-pipeline-envs   # 🔑 IMPORTANT
-    steps:
-      - name: Download Security Reports
-        uses: actions/download-artifact@v4
-        with:
-          pattern: |
-            security-reports
-            owasp-report
-          path: reports
-          merge-multiple: true
-
-      - name: Send Email Notification
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: smtp.gmail.com
-          server_port: 587
-          secure: false
-          username: ${{ secrets.GMAIL_USERNAME }}
-          password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
-          to: vijayakumarbl276@gmail.com
-          subject: "CI/CD Security Reports – ${{ github.repository }}"
-          body: |
-            Hi Vijay,
-
-            CI/CD pipeline completed successfully.
-
-            Attached reports:
-            - Trivy FS Scan
-            - Gitleaks Scan
-            - OWASP Dependency Check
-
-            Docker Image:
-            acecloudacademy/bankapp:latest
-
-            Regards,
-            GitHub Actions CI
-          attachments: |
-            reports/**/*.html
-            reports/**/*.json
-
-
+          Regards,
+          GitHub Actions
