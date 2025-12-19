@@ -227,15 +227,22 @@ jobs:
           tags: ${{ env.DOCKER_IMAGE }}
 
 # --------------------------------------------------
-# 7. EMAIL NOTIFICATION (GMAIL APP PASSWORD)
+
+# --------------------------------------------------
+# 7. EMAIL NOTIFICATION (CLEAN & CORRECT)
 # --------------------------------------------------
   email-notification:
     runs-on: self-hosted
     needs: build_docker_image_and_push
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download Security Reports
+        uses: actions/download-artifact@v4
         with:
+          pattern: |
+            security-reports
+            owasp-report
           path: reports
+          merge-multiple: true
 
       - name: Send Email Notification
         uses: dawidd6/action-send-mail@v3
@@ -252,15 +259,17 @@ jobs:
 
             CI/CD pipeline completed successfully.
 
-            Attached Reports:
+            Attached reports:
             - Trivy FS Scan
             - Gitleaks Scan
             - OWASP Dependency Check
 
             Docker Image:
-            ${{ env.DOCKER_IMAGE }}
+            acecloudacademy/bankapp:latest
 
             Regards,
-            GitHub Actions
+            GitHub Actions CI
           attachments: |
-            reports/**/* 
+            reports/**/*.html
+            reports/**/*.json
+
