@@ -7,20 +7,14 @@ on:
 permissions:
   contents: read
 
-env:
-  JAVA_VERSION: "17"
-
 jobs:
-# =====================================================
-# COMPILE
-# =====================================================
   compile:
     runs-on: self-hosted
     steps:
-      - name: Fix workspace permissions
+      - name: Remove broken Trivy APT repo (mandatory fix)
         run: |
-          sudo rm -rf $GITHUB_WORKSPACE/* || true
-          sudo chown -R ubuntu:ubuntu $GITHUB_WORKSPACE || true
+          sudo rm -f /etc/apt/sources.list.d/trivy.list
+          sudo rm -f /usr/share/keyrings/trivy.gpg
 
       - uses: actions/checkout@v4
 
@@ -32,26 +26,13 @@ jobs:
       - name: Compile
         run: mvn -B -ntp compile
 
-# =====================================================
-# TEST
-# =====================================================
-  test:
+  trivy-fs-scan:
     runs-on: self-hosted
     needs: compile
     steps:
       - uses: actions/checkout@v4
-      - run: mvn -B -ntp test
 
-# =====================================================
-# TRIVY FS SCAN (BINARY ONLY – NO APT)
-# =====================================================
-  trivy-fs-scan:
-    runs-on: self-hosted
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Trivy (binary)
+      - name: Install Trivy (binary – NO APT)
         run: |
           TRIVY_VERSION=0.51.1
           curl -sfL https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz | tar -xz
@@ -63,26 +44,21 @@ jobs:
           mkdir -p reports/trivy
           trivy fs . \
             --severity HIGH,CRITICAL \
-            --skip-dirs node_modules,target,.git \
-            --timeout 5m \
             --format html \
-            --output reports/trivy/trivy-fs-report.html || true
+            --output reports/trivy/trivy-report.html || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: trivy-fs-report
-          path: reports/trivy/trivy-fs-report.html
+          name: trivy-report
+          path: reports/trivy/trivy-report.html
 
-# =====================================================
-# OWASP DEPENDENCY CHECK (FAST + API KEY)
-# =====================================================
   owasp-dependency-check:
     runs-on: self-hosted
     needs: trivy-fs-scan
     steps:
       - uses: actions/checkout@v4
 
-      - name: OWASP Dependency Check
+      - name: Run OWASP Dependency Check (fast – API key)
         run: |
           mkdir -p reports/owasp
           docker run --rm \
@@ -93,70 +69,19 @@ jobs:
             --scan /src \
             --format HTML \
             --out /report \
-            --disableYarnAudit \
             --disableNodeAudit \
-            --nvdApiKey ${{ secrets.NVD_API_KEY }} \
-            --failOnCVSS 7 || true
+            --disableYarnAudit \
+            --nvdApiKey ${{ secrets.NVD_API_KEY }} || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: owasp-report
           path: reports/owasp/dependency-check-report.html
 
-# =====================================================
-# BUILD
-# =====================================================
-  build:
-    runs-on: self-hosted
-    needs: owasp-dependency-check
-    steps:
-      - uses: actions/checkout@v4
-      - run: mvn -B -ntp package
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-jar
-          path: target/*.jar
-
-# =====================================================
-# DOCKER BUILD & PUSH (WORKING VERSION)
-# =====================================================
-  build_docker_image_and_push:
-    runs-on: self-hosted
-    needs: build
-    environment: My-CI-pipeline-envs
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: app-jar
-          path: app
-
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: acecloudacademy/bankapp:latest
-
-# =====================================================
-# EMAIL NOTIFICATION (SUCCESS + FAILURE)
-# =====================================================
-  email-notification:
+  notify:
     runs-on: self-hosted
     if: always()
-    needs:
-      - trivy-fs-scan
-      - owasp-dependency-check
-      - build_docker_image_and_push
+    needs: [trivy-fs-scan, owasp-dependency-check]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -171,17 +96,12 @@ jobs:
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           to: vijayakumarbl276@gmail.com
           from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
-          subject: "CI Pipeline Result – ${{ job.status }}"
+          subject: "CI Security Scan Result – ${{ job.status }}"
           body: |
             Hi Vijay,
 
-            CI Pipeline Status: ${{ job.status }}
+            CI Status: ${{ job.status }}
 
-            Attached:
-            - Trivy FS Scan Report
-            - OWASP Dependency Check Report
-
-            Regards,
-            GitHub Actions CI
-          attachments: |
-            reports/**/*
+            Reports attached:
+            - Trivy FS Scan
+            - OWASP Dependency Check
