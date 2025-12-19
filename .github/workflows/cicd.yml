@@ -2,7 +2,7 @@ name: Secure CI Pipeline
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
   compile:
     runs-on: self-hosted
     steps:
-      - name: Clean workspace (fix permission issues)
+      - name: Clean workspace
         run: |
           sudo rm -rf $GITHUB_WORKSPACE/* || true
           sudo chown -R ubuntu:ubuntu $GITHUB_WORKSPACE || true
@@ -40,11 +40,29 @@ jobs:
       - run: mvn -B -ntp test
 
 # ==================================================
-# TRIVY FILESYSTEM SCAN
+# PACKAGE (UPLOAD app-jar ✅ FIX)
+# ==================================================
+  package:
+    runs-on: self-hosted
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build JAR
+        run: mvn -B -ntp package -DskipTests
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
+# ==================================================
+# TRIVY FS SCAN
 # ==================================================
   security-check:
     runs-on: self-hosted
-    needs: test
+    needs: package
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +79,7 @@ jobs:
           path: trivy-fs-report.html
 
 # ==================================================
-# OWASP DEPENDENCY CHECK (FAST + NVD API KEY)
+# OWASP DEPENDENCY CHECK (FAST)
 # ==================================================
   owasp-dependency-check:
     runs-on: self-hosted
@@ -69,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: OWASP Dependency Check (Optimized)
+      - name: OWASP Dependency Check
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
@@ -99,7 +117,7 @@ jobs:
           path: dependency-check-report.html
 
 # ==================================================
-# BUILD & PUSH DOCKER IMAGE (YOUR WORKING VERSION)
+# DOCKER BUILD & PUSH (FIXED)
 # ==================================================
   build_docker_image_and_push:
     runs-on: self-hosted
@@ -132,11 +150,17 @@ jobs:
           tags: acecloudacademy/bankapp:latest
 
 # ==================================================
-# EMAIL NOTIFICATION (SECURE – GMAIL APP PASSWORD)
+# EMAIL NOTIFICATION (SUCCESS OR FAILURE)
 # ==================================================
   email-notification:
     runs-on: self-hosted
-    needs: build_docker_image_and_push
+    needs:
+      - compile
+      - test
+      - package
+      - security-check
+      - owasp-dependency-check
+      - build_docker_image_and_push
     if: always()
     steps:
       - name: Download Reports
@@ -144,22 +168,26 @@ jobs:
         with:
           path: reports
 
-      - name: Send Email with Reports
+      - name: Send Email
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
           server_port: 587
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "CI Security Reports – OWASP & Trivy"
+          subject: "CI Pipeline Status – ${{ job.status }}"
           to: vijayakumarbl276@gmail.com
           from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
           body: |
             Hi Vijay,
 
-            Please find attached the latest security reports:
-            - OWASP Dependency Check
-            - Trivy Filesystem Scan
+            CI pipeline execution completed.
+
+            Status: ${{ job.status }}
+
+            Attached:
+            - OWASP Dependency Check Report
+            - Trivy FS Scan Report
 
             Regards,
             GitHub Actions CI
