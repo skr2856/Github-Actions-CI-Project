@@ -8,9 +8,9 @@ permissions:
   contents: read
 
 jobs:
-# --------------------------------------------------
+# ==================================================
 # COMPILE
-# --------------------------------------------------
+# ==================================================
   compile:
     runs-on: self-hosted
     steps:
@@ -23,25 +23,25 @@ jobs:
 
       - name: Install Java & Maven
         run: |
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y openjdk-17-jdk maven
 
       - name: Compile
         run: mvn -B -ntp compile
 
-# --------------------------------------------------
+# ==================================================
 # TEST
-# --------------------------------------------------
+# ==================================================
   test:
     runs-on: self-hosted
     needs: compile
     steps:
       - uses: actions/checkout@v4
-      - run: mvn test
+      - run: mvn -B -ntp test
 
-# --------------------------------------------------
-# SECURITY CHECK – TRIVY FS
-# --------------------------------------------------
+# ==================================================
+# TRIVY FILESYSTEM SCAN
+# ==================================================
   security-check:
     runs-on: self-hosted
     needs: test
@@ -51,6 +51,7 @@ jobs:
       - name: Trivy FS Scan
         run: |
           trivy fs . \
+            --severity HIGH,CRITICAL \
             --format html \
             --output trivy-fs-report.html || true
 
@@ -59,26 +60,35 @@ jobs:
           name: trivy-fs-report
           path: trivy-fs-report.html
 
-# --------------------------------------------------
-# OWASP DEPENDENCY CHECK (DOCKER – FIXED)
-# --------------------------------------------------
+# ==================================================
+# OWASP DEPENDENCY CHECK (FAST + NVD API KEY)
+# ==================================================
   owasp-dependency-check:
     runs-on: self-hosted
     needs: security-check
     steps:
       - uses: actions/checkout@v4
 
-      - name: OWASP Dependency Check
+      - name: OWASP Dependency Check (Optimized)
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          mkdir -p /tmp/owasp-report
+          mkdir -p /tmp/owasp-data /tmp/owasp-report
+
           docker run --rm \
             -u $(id -u):$(id -g) \
+            -e NVD_API_KEY=$NVD_API_KEY \
             -v $(pwd):/src \
+            -v /tmp/owasp-data:/usr/share/dependency-check/data \
             -v /tmp/owasp-report:/report \
             owasp/dependency-check:latest \
             --scan /src \
             --format HTML \
             --out /report \
+            --disableYarnAudit \
+            --disableNodeAudit \
+            --disableAssembly \
+            --nvdApiKey $NVD_API_KEY \
             --failOnCVSS 7 || true
 
           cp /tmp/owasp-report/* dependency-check-report.html
@@ -88,13 +98,13 @@ jobs:
           name: owasp-report
           path: dependency-check-report.html
 
-# --------------------------------------------------
-# BUILD DOCKER IMAGE
-# --------------------------------------------------
+# ==================================================
+# BUILD & PUSH DOCKER IMAGE (YOUR WORKING VERSION)
+# ==================================================
   build_docker_image_and_push:
     runs-on: self-hosted
-    needs: build_project_and_sonar_scan
-    environment: Github-Envs
+    needs: owasp-dependency-check
+    environment: My-CI-pipeline-envs
     steps:
       - uses: actions/checkout@v4
 
@@ -121,18 +131,20 @@ jobs:
           push: true
           tags: acecloudacademy/bankapp:latest
 
-# --------------------------------------------------
-# EMAIL NOTIFICATION (FIXED GMAIL AUTH)
-# --------------------------------------------------
+# ==================================================
+# EMAIL NOTIFICATION (SECURE – GMAIL APP PASSWORD)
+# ==================================================
   email-notification:
     runs-on: self-hosted
     needs: build_docker_image_and_push
+    if: always()
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download Reports
+        uses: actions/download-artifact@v4
         with:
           path: reports
 
-      - name: Send Email
+      - name: Send Email with Reports
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -145,9 +157,9 @@ jobs:
           body: |
             Hi Vijay,
 
-            Please find attached:
-            - OWASP Dependency Check Report
-            - Trivy FS Scan Report
+            Please find attached the latest security reports:
+            - OWASP Dependency Check
+            - Trivy Filesystem Scan
 
             Regards,
             GitHub Actions CI
