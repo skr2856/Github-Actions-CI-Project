@@ -250,12 +250,12 @@ jobs:
         with:
           server_address: smtp.gmail.com
           server_port: 587
+          secure: true
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
-          subject: "CI/CD Security Reports – ${{ github.repository }}"
+          from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
           to: vijayakumarbl276@gmail.com
-          from: ${{ secrets.GMAIL_USERNAME }}
-          secure: true
+          subject: "CI/CD Security Reports – ${{ github.repository }}"
           ignore_cert: true
           priority: low
           body: |
