@@ -114,9 +114,9 @@ jobs:
             trivy-fs-report.html
             gitleaks-report.json
 
-# --------------------------------------------------
+# ---------------------------------------------------
 # 4. BUILD + SONARQUBE SCAN
-# --------------------------------------------------
+# ---------------------------------------------------
   build_project_and_sonar_scan:
     runs-on: self-hosted
     needs: security-check
