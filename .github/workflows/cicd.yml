@@ -48,7 +48,7 @@ jobs:
         run: mvn -B compile
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STAGE_2: SECRET SCANNING (SAST - Pre-Commit Security)
+# STAGE 2: SECRET SCANNING (SAST - Pre-Commit Security)
 # ══════════════════════════════════════════════════════════════════════════════
 # Tool: Gitleaks
 # Category: SAST (Static Application Security Testing)
@@ -344,7 +344,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker Image
+      - name: Build Docker Image (No Cache Export)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -352,8 +352,6 @@ jobs:
           push: false
           tags: ${{ env.DOCKER_IMAGE }}
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STAGE 8: CONTAINER IMAGE SECURITY SCAN (DAST - Image Analysis)
@@ -445,76 +443,311 @@ jobs:
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STAGE 10: SECURITY REPORT NOTIFICATION
+# STAGE 10: SECURITY REPORT NOTIFICATION (SUCCESS OR FAILURE)
 # ══════════════════════════════════════════════════════════════════════════════
-# Purpose: Consolidate and deliver all security reports via email
-# Provides: Complete security posture overview for the team
-# Includes: All SAST, SCA, and DAST scan results
+# Purpose: Send comprehensive notification with pipeline status
+# Triggers: Always runs regardless of success/failure
+# Includes: Build status, failed stage details, available reports
+# Smart Logic: Adapts email content based on which stage failed
 # ══════════════════════════════════════════════════════════════════════════════
   security-notification:
-    name: "📧 Send Security Reports"
+    name: "📧 Send Build Status & Security Reports"
     runs-on: self-hosted
-    needs: docker-push
+    needs: 
+      - compile
+      - gitleaks-scan
+      - trivy-fs-scan
+      - sonarqube-analysis
+      - owasp-dependency-check
+      - build-artifact
+      - docker-build
+      - trivy-image-scan
+      - docker-push
     environment: My-CI-pipeline-envs
     if: always()
     steps:
-      - name: Download All Reports
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create Reports Directory
+        run: mkdir -p reports
+
+      - name: Download Gitleaks Report
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          path: reports
+          name: gitleaks-report
+          path: reports/gitleaks-report
 
-      - name: List All Reports
+      - name: Download Trivy FS Reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-fs-reports
+          path: reports/trivy-fs-reports
+
+      - name: Download SonarQube Report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: sonarqube-report
+          path: reports/sonarqube-report
+
+      - name: Download OWASP Report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: owasp-report
+          path: reports/owasp-report
+
+      - name: Download Trivy Image Reports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: trivy-image-reports
+          path: reports/trivy-image-reports
+
+      - name: Determine Pipeline Status
+        id: pipeline_status
+        run: |
+          # Check status of each job
+          COMPILE_STATUS="${{ needs.compile.result }}"
+          GITLEAKS_STATUS="${{ needs.gitleaks-scan.result }}"
+          TRIVY_FS_STATUS="${{ needs.trivy-fs-scan.result }}"
+          SONAR_STATUS="${{ needs.sonarqube-analysis.result }}"
+          OWASP_STATUS="${{ needs.owasp-dependency-check.result }}"
+          BUILD_STATUS="${{ needs.build-artifact.result }}"
+          DOCKER_BUILD_STATUS="${{ needs.docker-build.result }}"
+          TRIVY_IMAGE_STATUS="${{ needs.trivy-image-scan.result }}"
+          DOCKER_PUSH_STATUS="${{ needs.docker-push.result }}"
+          
+          # Initialize variables
+          OVERALL_STATUS="SUCCESS"
+          FAILED_STAGE="None"
+          STATUS_EMOJI="✅"
+          STATUS_COLOR="GREEN"
+          
+          # Check each stage and identify first failure
+          if [ "$COMPILE_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 1: Compilation"
+            STATUS_EMOJI="❌"
+            STATUS_COLOR="RED"
+          elif [ "$GITLEAKS_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 2: Secret Scanning (Gitleaks)"
+            STATUS_EMOJI="🔐❌"
+            STATUS_COLOR="RED"
+          elif [ "$TRIVY_FS_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 3: Filesystem Security Scan (Trivy FS)"
+            STATUS_EMOJI="🛡️❌"
+            STATUS_COLOR="RED"
+          elif [ "$SONAR_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 4: Code Quality Analysis (SonarQube)"
+            STATUS_EMOJI="🔍❌"
+            STATUS_COLOR="RED"
+          elif [ "$OWASP_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 5: Dependency Scan (OWASP)"
+            STATUS_EMOJI="📚❌"
+            STATUS_COLOR="RED"
+          elif [ "$BUILD_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 6: Application Build"
+            STATUS_EMOJI="🏗️❌"
+            STATUS_COLOR="RED"
+          elif [ "$DOCKER_BUILD_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 7: Docker Image Build"
+            STATUS_EMOJI="🐳❌"
+            STATUS_COLOR="RED"
+          elif [ "$TRIVY_IMAGE_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 8: Container Security Scan (Trivy Image)"
+            STATUS_EMOJI="🔎❌"
+            STATUS_COLOR="RED"
+          elif [ "$DOCKER_PUSH_STATUS" != "success" ]; then
+            OVERALL_STATUS="FAILED"
+            FAILED_STAGE="Stage 9: Docker Push to Registry"
+            STATUS_EMOJI="📤❌"
+            STATUS_COLOR="RED"
+          fi
+          
+          # Export to GitHub output
+          echo "overall_status=$OVERALL_STATUS" >> $GITHUB_OUTPUT
+          echo "failed_stage=$FAILED_STAGE" >> $GITHUB_OUTPUT
+          echo "status_emoji=$STATUS_EMOJI" >> $GITHUB_OUTPUT
+          echo "status_color=$STATUS_COLOR" >> $GITHUB_OUTPUT
+          
+          # Save individual job statuses
+          echo "compile_status=$COMPILE_STATUS" >> $GITHUB_OUTPUT
+          echo "gitleaks_status=$GITLEAKS_STATUS" >> $GITHUB_OUTPUT
+          echo "trivy_fs_status=$TRIVY_FS_STATUS" >> $GITHUB_OUTPUT
+          echo "sonar_status=$SONAR_STATUS" >> $GITHUB_OUTPUT
+          echo "owasp_status=$OWASP_STATUS" >> $GITHUB_OUTPUT
+          echo "build_status=$BUILD_STATUS" >> $GITHUB_OUTPUT
+          echo "docker_build_status=$DOCKER_BUILD_STATUS" >> $GITHUB_OUTPUT
+          echo "trivy_image_status=$TRIVY_IMAGE_STATUS" >> $GITHUB_OUTPUT
+          echo "docker_push_status=$DOCKER_PUSH_STATUS" >> $GITHUB_OUTPUT
+          
+          echo "Pipeline Overall Status: $OVERALL_STATUS"
+          echo "Failed Stage: $FAILED_STAGE"
+
+      - name: List Available Reports
+        id: available_reports
         run: |
           echo "═══════════════════════════════════════════════════════════"
-          echo "📋 Security Reports Summary"
+          echo "📋 Available Security Reports"
           echo "═══════════════════════════════════════════════════════════"
-          find reports/ -type f \( -name "*.html" -o -name "*.json" \) -ls || echo "No reports found"
+          
+          REPORTS_LIST=""
+          
+          if [ -d "reports/gitleaks-report" ]; then
+            echo "✓ Gitleaks Report Found"
+            REPORTS_LIST="${REPORTS_LIST}\n  • Gitleaks Secret Scan (JSON)"
+          else
+            echo "✗ Gitleaks Report Not Found"
+          fi
+          
+          if [ -d "reports/trivy-fs-reports" ]; then
+            echo "✓ Trivy FS Report Found"
+            REPORTS_LIST="${REPORTS_LIST}\n  • Trivy Filesystem Scan (HTML + JSON)"
+          else
+            echo "✗ Trivy FS Report Not Found"
+          fi
+          
+          if [ -d "reports/sonarqube-report" ]; then
+            echo "✓ SonarQube Report Found"
+            REPORTS_LIST="${REPORTS_LIST}\n  • SonarQube Code Analysis"
+          else
+            echo "✗ SonarQube Report Not Found"
+          fi
+          
+          if [ -d "reports/owasp-report" ]; then
+            echo "✓ OWASP Report Found"
+            REPORTS_LIST="${REPORTS_LIST}\n  • OWASP Dependency Check (HTML + JSON)"
+          else
+            echo "✗ OWASP Report Not Found"
+          fi
+          
+          if [ -d "reports/trivy-image-reports" ]; then
+            echo "✓ Trivy Image Report Found"
+            REPORTS_LIST="${REPORTS_LIST}\n  • Trivy Container Image Scan (HTML + JSON)"
+          else
+            echo "✗ Trivy Image Report Not Found"
+          fi
+          
+          echo "reports_list<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$REPORTS_LIST" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Prepare Report Summary
+      - name: Generate Pipeline Status Report
         run: |
+          # Determine status icons
+          COMPILE_ICON="✅"
+          GITLEAKS_ICON="✅"
+          TRIVY_FS_ICON="✅"
+          SONAR_ICON="✅"
+          OWASP_ICON="✅"
+          BUILD_ICON="✅"
+          DOCKER_BUILD_ICON="✅"
+          TRIVY_IMAGE_ICON="✅"
+          DOCKER_PUSH_ICON="✅"
+          
+          [ "${{ steps.pipeline_status.outputs.compile_status }}" != "success" ] && COMPILE_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.gitleaks_status }}" != "success" ] && GITLEAKS_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.trivy_fs_status }}" != "success" ] && TRIVY_FS_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.sonar_status }}" != "success" ] && SONAR_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.owasp_status }}" != "success" ] && OWASP_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.build_status }}" != "success" ] && BUILD_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.docker_build_status }}" != "success" ] && DOCKER_BUILD_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.trivy_image_status }}" != "success" ] && TRIVY_IMAGE_ICON="❌"
+          [ "${{ steps.pipeline_status.outputs.docker_push_status }}" != "success" ] && DOCKER_PUSH_ICON="❌"
+          
+          # Set skipped icon for stages after failure
+          if [ "${{ steps.pipeline_status.outputs.overall_status }}" == "FAILED" ]; then
+            [ "${{ steps.pipeline_status.outputs.compile_status }}" == "skipped" ] && COMPILE_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.gitleaks_status }}" == "skipped" ] && GITLEAKS_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.trivy_fs_status }}" == "skipped" ] && TRIVY_FS_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.sonar_status }}" == "skipped" ] && SONAR_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.owasp_status }}" == "skipped" ] && OWASP_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.build_status }}" == "skipped" ] && BUILD_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.docker_build_status }}" == "skipped" ] && DOCKER_BUILD_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.trivy_image_status }}" == "skipped" ] && TRIVY_IMAGE_ICON="⊘"
+            [ "${{ steps.pipeline_status.outputs.docker_push_status }}" == "skipped" ] && DOCKER_PUSH_ICON="⊘"
+          fi
+          
+          mkdir -p reports
+          
           cat > reports/pipeline-summary.txt << EOF
           ═══════════════════════════════════════════════════════════════════
-          DevSecOps Pipeline Execution Summary
+          ${{ steps.pipeline_status.outputs.status_emoji }} DevSecOps Pipeline: ${{ steps.pipeline_status.outputs.overall_status }}
           ═══════════════════════════════════════════════════════════════════
           
+          Pipeline Status: ${{ steps.pipeline_status.outputs.status_emoji }} ${{ steps.pipeline_status.outputs.overall_status }}
+          Failed Stage: ${{ steps.pipeline_status.outputs.failed_stage }}
+          
+          ───────────────────────────────────────────────────────────────────
+          Build Information:
+          ───────────────────────────────────────────────────────────────────
           Repository: ${{ github.repository }}
           Branch: ${{ github.ref_name }}
           Commit: ${{ github.sha }}
+          Commit Message: ${{ github.event.head_commit.message }}
           Triggered by: ${{ github.actor }}
+          Workflow Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           Build Date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ═══════════════════════════════════════════════════════════════════
+          PIPELINE STAGE EXECUTION STATUS
+          ═══════════════════════════════════════════════════════════════════
+          
+          ${COMPILE_ICON}  Stage 1: Code Compilation
+          ${GITLEAKS_ICON}  Stage 2: Secret Detection (Gitleaks) - SAST
+          ${TRIVY_FS_ICON}  Stage 3: Filesystem Security (Trivy FS) - SAST
+          ${SONAR_ICON}  Stage 4: Code Quality & Security (SonarQube) - SAST
+          ${OWASP_ICON}  Stage 5: Dependency Vulnerability Scan (OWASP) - SCA
+          ${BUILD_ICON}  Stage 6: Application Build
+          ${DOCKER_BUILD_ICON}  Stage 7: Docker Image Build
+          ${TRIVY_IMAGE_ICON}  Stage 8: Container Image Scan (Trivy Image) - DAST
+          ${DOCKER_PUSH_ICON}  Stage 9: Push to Docker Registry
+          
+          Legend: ✅ Success | ❌ Failed | ⊘ Skipped
           
           ───────────────────────────────────────────────────────────────────
           SAST Tools (Static Application Security Testing):
           ───────────────────────────────────────────────────────────────────
-          ✓ Gitleaks          - Secret Detection
-          ✓ Trivy FS          - Filesystem & IaC Security
-          ✓ SonarQube         - Code Quality & Security Analysis
-          ✓ OWASP Dep-Check   - Dependency Vulnerability Scanning (SCA)
+          ${GITLEAKS_ICON} Gitleaks          - Secret & Credential Detection
+          ${TRIVY_FS_ICON} Trivy FS          - Filesystem & IaC Security
+          ${SONAR_ICON} SonarQube         - Code Quality & Security Analysis
+          ${OWASP_ICON} OWASP Dep-Check   - Dependency Vulnerability Scanning (SCA)
           
           ───────────────────────────────────────────────────────────────────
           DAST Tools (Dynamic Application Security Testing):
           ───────────────────────────────────────────────────────────────────
-          ✓ Trivy Image       - Container Image Security Scanning
+          ${TRIVY_IMAGE_ICON} Trivy Image       - Container Image Security Scanning
           
           ───────────────────────────────────────────────────────────────────
           Docker Image Details:
           ───────────────────────────────────────────────────────────────────
           Image: ${{ env.DOCKER_IMAGE }}
-          Status: ✅ Pushed to Registry
+          Status: $([ "${{ steps.pipeline_status.outputs.docker_push_status }}" == "success" ] && echo "✅ Successfully Pushed to Registry" || echo "❌ Push Failed or Skipped")
           
           ═══════════════════════════════════════════════════════════════════
-          Attached Reports:
+          Available Security Reports:
           ═══════════════════════════════════════════════════════════════════
-          • gitleaks-report.json
-          • trivy-fs-report.html & .json
-          • trivy-image-report.html & .json
-          • owasp-dependency-report.html & .json (if available)
+          ${{ steps.available_reports.outputs.reports_list }}
           
-          Review these reports for detailed security findings.
+          $([ "${{ steps.pipeline_status.outputs.overall_status }}" == "FAILED" ] && echo "⚠️  ACTION REQUIRED: Review the failed stage and attached reports." || echo "✅ All security checks passed successfully!")
+          
+          Review the attached reports for detailed security findings.
           ═══════════════════════════════════════════════════════════════════
           EOF
 
-      - name: Send Security Reports Email
+      - name: Send Email Notification (Success)
+        if: steps.pipeline_status.outputs.overall_status == 'SUCCESS'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -524,7 +757,7 @@ jobs:
           password: ${{ secrets.SMTP_PASSWORD }}
           from: ${{ secrets.SMTP_USERNAME }}
           to: vijayakumarbl276@gmail.com
-          subject: "✅ DevSecOps Pipeline Complete - ${{ github.repository }}"
+          subject: "✅ SUCCESS: DevSecOps Pipeline - ${{ github.repository }} [${{ github.ref_name }}]"
           body: file://reports/pipeline-summary.txt
           attachments: |
             reports/gitleaks-report/*.json
@@ -534,6 +767,36 @@ jobs:
             reports/trivy-image-reports/*.json
             reports/owasp-report/*.html
             reports/owasp-report/*.json
+
+      - name: Send Email Notification (Failure)
+        if: steps.pipeline_status.outputs.overall_status == 'FAILED'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: ${{ secrets.SMTP_USERNAME }}
+          to: vijayakumarbl276@gmail.com
+          subject: "❌ FAILED: DevSecOps Pipeline - ${{ github.repository }} [${{ github.ref_name }}] - ${{ steps.pipeline_status.outputs.failed_stage }}"
+          body: file://reports/pipeline-summary.txt
+          attachments: |
+            reports/gitleaks-report/*.json
+            reports/trivy-fs-reports/*.html
+            reports/trivy-fs-reports/*.json
+            reports/trivy-image-reports/*.html
+            reports/trivy-image-reports/*.json
+            reports/owasp-report/*.html
+            reports/owasp-report/*.json
+
+      - name: Fail Job if Pipeline Failed
+        if: steps.pipeline_status.outputs.overall_status == 'FAILED'
+        run: |
+          echo "════════════════════════════════════════════════════════════"
+          echo "❌ Pipeline Failed at: ${{ steps.pipeline_status.outputs.failed_stage }}"
+          echo "════════════════════════════════════════════════════════════"
+          exit 1
 
 # ══════════════════════════════════════════════════════════════════════════════
 # END OF DEVSECOPS CI/CD PIPELINE
