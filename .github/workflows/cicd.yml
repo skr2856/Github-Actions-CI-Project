@@ -114,9 +114,9 @@ jobs:
             trivy-fs-report.html
             gitleaks-report.json
 
-# ---------------------------------------------------
+# --------------------------------------------------
 # 4. BUILD + SONARQUBE SCAN
-# ---------------------------------------------------
+# --------------------------------------------------
   build_project_and_sonar_scan:
     runs-on: self-hosted
     needs: security-check
@@ -239,18 +239,22 @@ jobs:
       - name: Download Security Reports
         uses: actions/download-artifact@v4
         with:
-          pattern: |
-            security-reports
-            owasp-report
+          name: security-reports
           path: reports
-          merge-multiple: true
+
+      - name: Download OWASP Report
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: owasp-report
+          path: reports/owasp
 
       - name: List Downloaded Files
         run: |
           echo "=== Listing all downloaded files ==="
-          ls -lR reports/
+          ls -lR reports/ || echo "No reports directory found"
           echo "=== Finding HTML and JSON files ==="
-          find reports/ -type f \( -name "*.html" -o -name "*.json" \)
+          find reports/ -type f \( -name "*.html" -o -name "*.json" \) || echo "No files found"
 
       - name: Send Email Notification
         uses: dawidd6/action-send-mail@v3
@@ -269,9 +273,9 @@ jobs:
             CI/CD pipeline completed successfully.
 
             Attached reports:
-            - Trivy FS Scan
-            - Gitleaks Scan
-            - OWASP Dependency Check
+            - Trivy FS Scan (HTML + JSON)
+            - Gitleaks Scan (JSON)
+            - OWASP Dependency Check (if available)
 
             Docker Image:
             ${{ env.DOCKER_IMAGE }}
@@ -282,4 +286,4 @@ jobs:
             reports/trivy-fs-report.html
             reports/trivy-fs-report.json
             reports/gitleaks-report.json
-            reports/dependency-check-report.html
+            reports/owasp/*.html
