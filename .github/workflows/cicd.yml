@@ -1,8 +1,8 @@
 name: Full CI/CD Security Pipeline
 
 on:
-  push:
-    branches: ["main"]
+  workflow_dispatch:
+
 
 permissions:
   contents: read
@@ -249,14 +249,13 @@ jobs:
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
-          server_port: 587
+          server_port: 465
           secure: true
           username: ${{ secrets.GMAIL_USERNAME }}
           password: ${{ secrets.GMAIL_APP_PASSWORD }}
           from: GitHub CI <${{ secrets.GMAIL_USERNAME }}>
           to: vijayakumarbl276@gmail.com
           subject: "CI/CD Security Reports – ${{ github.repository }}"
-          ignore_cert: true
           priority: low
           body: |
             Hi Vijay,
