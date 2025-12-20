@@ -245,6 +245,13 @@ jobs:
           path: reports
           merge-multiple: true
 
+      - name: List Downloaded Files
+        run: |
+          echo "=== Listing all downloaded files ==="
+          ls -lR reports/
+          echo "=== Finding HTML and JSON files ==="
+          find reports/ -type f \( -name "*.html" -o -name "*.json" \)
+
       - name: Send Email Notification
         uses: dawidd6/action-send-mail@v3
         with:
@@ -272,5 +279,7 @@ jobs:
             Regards,
             GitHub Actions CI
           attachments: |
-            reports/**/*.html
-            reports/**/*.json
+            reports/trivy-fs-report.html
+            reports/trivy-fs-report.json
+            reports/gitleaks-report.json
+            reports/dependency-check-report.html
