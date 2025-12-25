@@ -15,7 +15,7 @@ clone_repo:
     - docker-runner
   script:
     - apk add --no-cache git
-    - git clone https://github.com/<username>/<repo-name>.git project
+    - git clone https://github.com/skr2856/Github-Actions-CI-Project.git
   artifacts:
     paths:
       - project
